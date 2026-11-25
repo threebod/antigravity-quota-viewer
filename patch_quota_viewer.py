@@ -1,9 +1,11 @@
 import argparse
+import hashlib
 import json
 import os
 import shutil
 import struct
 import subprocess
+import sys
 import tempfile
 
 IPC_ADDITION = r"""
@@ -533,8 +535,18 @@ PRELOAD_QUOTA_WIDGET = r"""
 
 
 def default_asar_path():
+    if sys.platform == "darwin":
+        return "/Applications/Antigravity.app/Contents/Resources/app.asar"
     local_app_data = os.environ.get("LOCALAPPDATA", "")
     return os.path.join(local_app_data, "Programs", "antigravity", "resources", "app.asar")
+
+
+def sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest().upper()
 
 
 def unpack_asar(asar_path):
@@ -606,6 +618,7 @@ def verify_js_if_node_available(files_map):
 def main():
     parser = argparse.ArgumentParser(description="Patch Antigravity app.asar with an inline chat quota viewer.")
     parser.add_argument("--asar", default=default_asar_path(), help="Path to Antigravity resources/app.asar")
+    parser.add_argument("--output", default=None, help="Write patched app.asar to a separate file instead of overwriting in place")
     parser.add_argument("--restore", action="store_true", help="Restore app.asar from app.asar.bak")
     args = parser.parse_args()
 
@@ -621,10 +634,6 @@ def main():
 
     if not os.path.exists(asar_path):
         raise FileNotFoundError(f"app.asar not found: {asar_path}")
-
-    if not os.path.exists(bak_path):
-        shutil.copy2(asar_path, bak_path)
-        print(f"Created backup: {bak_path}")
 
     hdr, files_data = unpack_asar(asar_path)
 
@@ -644,10 +653,27 @@ def main():
     files_data["dist/ipcHandlers.js"] = ipc_js.encode("utf-8")
     files_data["dist/preload.js"] = preload_js.encode("utf-8")
 
+    if args.output:
+        out_path = os.path.abspath(args.output)
+        out_dir = os.path.dirname(out_path)
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
+        pack_asar(hdr, files_data, out_path)
+        size = os.path.getsize(out_path)
+        digest = sha256_file(out_path)
+        print(f"Patched successfully: {out_path} (Size={size}, SHA256={digest})")
+        return
+
+    if not os.path.exists(bak_path):
+        shutil.copy2(asar_path, bak_path)
+        print(f"Created backup: {bak_path}")
+
     tmp_out = asar_path + ".tmp"
     pack_asar(hdr, files_data, tmp_out)
     os.replace(tmp_out, asar_path)
-    print(f"Patched successfully: {asar_path}")
+    size = os.path.getsize(asar_path)
+    digest = sha256_file(asar_path)
+    print(f"Patched successfully: {asar_path} (Size={size}, SHA256={digest})")
 
 
 if __name__ == "__main__":
